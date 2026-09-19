@@ -7,7 +7,7 @@ use crate::parser_impls::{NfNetlinkData, NfNetlinkList};
 use crate::sys::{
     NFTA_SET_ELEM_KEY, NFTA_SET_ELEM_LIST_ELEMENTS, NFTA_SET_ELEM_LIST_SET,
     NFTA_SET_ELEM_LIST_TABLE, NFTA_SET_FLAGS, NFTA_SET_ID, NFTA_SET_KEY_LEN, NFTA_SET_KEY_TYPE,
-    NFTA_SET_NAME, NFTA_SET_TABLE, NFTA_SET_USERDATA, NFT_MSG_DELSET, NFT_MSG_DELSETELEM,
+    NFTA_SET_NAME, NFTA_SET_TABLE, NFTA_SET_TIMEOUT, NFTA_SET_USERDATA, NFT_MSG_DELSET, NFT_MSG_DELSETELEM,
     NFT_MSG_NEWSET, NFT_MSG_NEWSETELEM,
 };
 use crate::table::Table;
@@ -33,6 +33,8 @@ pub struct Set {
     pub id: u32,
     #[field(NFTA_SET_USERDATA)]
     pub userdata: Vec<u8>,
+    #[field(NFTA_SET_TIMEOUT)]
+    pub timeout: u64,
 }
 
 impl NfNetlinkObject for Set {

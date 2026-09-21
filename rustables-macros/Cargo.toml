@@ -1,6 +1,6 @@
 [package]
 name = "rustables-macros"
-version = "0.1.3"
+version = "0.2.0"
 description = "Internal macros for generation netlink structures for the rustables project"
 
 authors.workspace = true
@@ -14,8 +14,8 @@ repository.workspace = true
 proc-macro = true
 
 [dependencies]
-syn = { version = "2.0", features = ["full"] }
+syn = { version = "3.0", features = ["full"] }
 quote = "1.0"
 proc-macro2 = "1.0"
 once_cell = "1.1"
-proc-macro2-diagnostics = "0.10"
+manyhow = "0.14.0"

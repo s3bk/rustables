@@ -1,22 +1,5 @@
 {
   "nodes": {
-    "crate2nix": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1779717186,
-        "narHash": "sha256-WAmzV4ohaVEqZ4Zs2G0Gb/t9iY3KuQ7bg3rLNcjIhM4=",
-        "owner": "kolloch",
-        "repo": "crate2nix",
-        "rev": "c994c83963b42b26f127e9cc50a8c86852db67d0",
-        "type": "github"
-      },
-      "original": {
-        "owner": "kolloch",
-        "ref": "master",
-        "repo": "crate2nix",
-        "type": "github"
-      }
-    },
     "flake-parts": {
       "inputs": {
         "nixpkgs-lib": "nixpkgs-lib"
@@ -68,7 +51,6 @@
     },
     "root": {
       "inputs": {
-        "crate2nix": "crate2nix",
         "flake-parts": "flake-parts",
         "nixpkgs": "nixpkgs"
       }

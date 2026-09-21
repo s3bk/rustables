@@ -1,11 +1,10 @@
 {
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
-    crate2nix = { url = "github:kolloch/crate2nix/master"; flake = false; };
     flake-parts.url = "github:hercules-ci/flake-parts";
   };
 
-  outputs = { self, nixpkgs,  crate2nix, flake-parts } @ inputs : flake-parts.lib.mkFlake { inherit inputs; } {
+  outputs = { self, nixpkgs,  flake-parts } @ inputs : flake-parts.lib.mkFlake { inherit inputs; } {
     perSystem = { config, self', inputs', pkgs, system, ... }:
       let
       pkgs = import nixpkgs {

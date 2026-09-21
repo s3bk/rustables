@@ -4,11 +4,12 @@ use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;
 
+use manyhow::manyhow;
 use proc_macro::TokenStream;
 use proc_macro2::Span;
-use proc_macro2_diagnostics::{Diagnostic, Level, SpanDiagnosticExt};
 use quote::{quote, quote_spanned};
 
+use syn::Error;
 use syn::parse::Parser;
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
@@ -69,21 +70,20 @@ struct FieldArgs {
     optional: bool,
 }
 
-fn parse_field_args(input: proc_macro2::TokenStream) -> Result<FieldArgs, Diagnostic> {
+fn parse_field_args(input: proc_macro2::TokenStream) -> syn::Result<FieldArgs> {
     let mut args = FieldArgs::default();
     let parser = Punctuated::<Meta, Token![,]>::parse_terminated;
-    let attribute_args = parser
-        .parse2(input)
-        .map_err(|e| Diagnostic::new(Level::Error, e.to_string()))?;
+    let attribute_args = parser.parse2(input)?;
     for arg in attribute_args.iter() {
         match arg {
             Meta::Path(path) => {
                 if args.netlink_type.is_none() {
                     args.netlink_type = Some(path.clone());
                 } else {
-                    return Err(arg
-                        .span()
-                        .error("Only a single netlink value can exist for a given field"));
+                    return Err(Error::new(
+                        arg.span(),
+                        "Only a single netlink value can exist for a given field",
+                    ));
                 }
             }
             Meta::NameValue(namevalue) => {
@@ -100,7 +100,10 @@ fn parse_field_args(input: proc_macro2::TokenStream) -> Result<FieldArgs, Diagno
                         {
                             args.override_function_name = Some(val.value());
                         } else {
-                            return Err(namevalue.value.span().error("Expected a string literal"));
+                            return Err(Error::new(
+                                namevalue.value.span(),
+                                "Expected a string literal",
+                            ));
                         }
                     }
                     "optional" => {
@@ -111,13 +114,13 @@ fn parse_field_args(input: proc_macro2::TokenStream) -> Result<FieldArgs, Diagno
                         {
                             args.optional = boolean.value;
                         } else {
-                            return Err(namevalue.value.span().error("Expected a boolean"));
+                            return Err(Error::new(namevalue.value.span(), "Expected a boolean"));
                         }
                     }
-                    _ => return Err(arg.span().error("Unsupported macro parameter")),
+                    _ => return Err(Error::new(arg.span(), "Unsupported macro parameter")),
                 }
             }
-            _ => return Err(arg.span().error("Unrecognized argument")),
+            _ => return Err(Error::new(arg.span(), "Unrecognized argument")),
         }
     }
     Ok(args)
@@ -139,12 +142,10 @@ impl Default for StructArgs {
     }
 }
 
-fn parse_struct_args(input: TokenStream) -> Result<StructArgs, Diagnostic> {
+fn parse_struct_args(input: TokenStream) -> syn::Result<StructArgs> {
     let mut args = StructArgs::default();
     let parser = Punctuated::<Meta, Token![,]>::parse_terminated;
-    let attribute_args = parser
-        .parse(input.clone())
-        .map_err(|e| Diagnostic::new(Level::Error, e.to_string()))?;
+    let attribute_args = parser.parse(input.clone())?;
     for arg in attribute_args.iter() {
         if let Meta::NameValue(namevalue) = arg {
             let key = namevalue
@@ -167,22 +168,81 @@ fn parse_struct_args(input: TokenStream) -> Result<StructArgs, Diagnostic> {
                     "derive_deserialize" => {
                         args.derive_deserialize = boolean.value;
                     }
-                    _ => return Err(arg.span().error("Unsupported macro parameter")),
+                    _ => return Err(Error::new(arg.span(), "Unsupported macro parameter")),
                 }
             } else {
-                return Err(namevalue.value.span().error("Expected a boolean"));
+                return Err(Error::new(namevalue.value.span(), "Expected a boolean"));
             }
         } else {
-            return Err(arg.span().error("Unrecognized argument"));
+            return Err(Error::new(arg.span(), "Unrecognized argument"));
         }
     }
     Ok(args)
 }
 
-fn nfnetlink_struct_inner(
-    attrs: TokenStream,
-    item: TokenStream,
-) -> Result<TokenStream, Diagnostic> {
+/// `nfnetlink_struct` is a macro wrapping structures that describe nftables objects.
+/// It allows serializing and deserializing these objects to the corresponding nfnetlink
+/// attributes.
+///
+/// It automatically generates getter and setter functions for each netlink properties.
+///
+/// # Parameters
+/// The macro have multiple parameters:
+/// - `nested` (defaults to `false`): the structure is nested (in the netlink sense)
+///   inside its parent structure. This is the case of most structures outside
+///   of the main nftables objects (batches, sets, rules, chains and tables), which are
+///   the outermost structures, and as such cannot be nested.
+/// - `derive_decoder` (defaults to `true`): derive a [`rustables::nlmsg::AttributeDecoder`]
+///   implementation for the structure
+/// - `derive_deserialize` (defaults to `true`): derive a [`rustables::nlmsg::NfNetlinkDeserializable`]
+///   implementation for the structure
+///
+/// # Example use
+/// ```ignore
+/// #[nfnetlink_struct(derive_deserialize = false)]
+/// #[derive(PartialEq, Eq, Default, Debug)]
+/// pub struct Chain {
+///     family: ProtocolFamily,
+///     #[field(NFTA_CHAIN_TABLE)]
+///     table: String,
+///     #[field(NFTA_CHAIN_TYPE, name_in_functions = "type")]
+///     chain_type: ChainType,
+///     #[field(optional = true, crate::sys::NFTA_CHAIN_USERDATA)]
+///     userdata: Vec<u8>,
+///     ...
+/// }
+/// ```
+///
+/// # Type of fields
+/// This contrived example show the two possible type of fields:
+/// - A field that is not converted to a netlink attribute (`family`) because it is not
+///   annotated in `#[field]` attribute.
+///   When deserialized, this field will take the value it is given in the Default implementation
+///   of the struct.
+/// - A field that is annotated with the `#[field]` attribute.
+///   That attribute takes parameters (there are none here), and the netlink attribute type.
+///   When annotated with that attribute, the macro will generate `get_<name>`, `set_<name>` and
+///   `with_<name>` methods to manipulate the attribute (e.g. `get_table`, `set_table` and
+///   `with_table`).
+///   It will also replace the field type (here `String`) with an Option (`Option<String>`)
+///   so the struct may represent objects where that attribute is not set.
+///
+/// # `#[field]` parameters
+/// The `#[field]` attribute can be parametrized through two options:
+/// - `optional` (defaults to `false`): if the netlink attribute type (here `NFTA_CHAIN_USERDATA`)
+///   does not exist, do not generate methods and ignore this attribute if encountered
+///   while deserializing a nftables object.
+///   This is useful for attributes added recently to the kernel, which may not be supported on
+///   older kernels.
+///   Support for an attribute is detected according to the existence of that attribute in the kernel
+///   headers.
+/// - `name_in_functions` (not defined by default): overwrite the `<name`> in the name of the methods
+///   `get_<name>`, `set_<name>` and `with_<name>`.
+///   Here, this means that even though the field is called `chain_type`, users can query it with
+///   the method `get_type` instead of `get_chain_type`.
+#[manyhow]
+#[proc_macro_attribute]
+pub fn nfnetlink_struct(attrs: TokenStream, item: TokenStream) -> syn::Result<TokenStream> {
     let ast: ItemStruct = parse(item).unwrap();
     let name = ast.ident;
 
@@ -201,14 +261,17 @@ fn nfnetlink_struct_inner(
                 let field_args = match &attr.meta {
                     Meta::List(l) => l,
                     _ => {
-                        return Err(attr.span().error("Invalid attributes"));
+                        return Err(Error::new(attr.span(), "Invalid attributes"));
                     }
                 };
 
                 let field_args = match parse_field_args(field_args.tokens.clone()) {
                     Ok(x) => x,
                     Err(_) => {
-                        return Err(attr.span().error("Could not parse the field attributes"));
+                        return Err(Error::new(
+                            attr.span(),
+                            "Could not parse the field attributes",
+                        ));
                     }
                 };
                 if let Some(netlink_type) = field_args.netlink_type.clone() {
@@ -241,7 +304,7 @@ fn nfnetlink_struct_inner(
                             .collect(),
                     });
                 } else {
-                    return Err(attr.span().error("Missing Netlink Type in field"));
+                    return Err(Error::new(attr.span(), "Missing Netlink Type in field"));
                 }
                 continue 'out;
             }
@@ -419,74 +482,6 @@ fn nfnetlink_struct_inner(
     Ok(res.into())
 }
 
-/// `nfnetlink_struct` is a macro wrapping structures that describe nftables objects.
-/// It allows serializing and deserializing these objects to the corresponding nfnetlink
-/// attributes.
-///
-/// It automatically generates getter and setter functions for each netlink properties.
-///
-/// # Parameters
-/// The macro have multiple parameters:
-/// - `nested` (defaults to `false`): the structure is nested (in the netlink sense)
-///   inside its parent structure. This is the case of most structures outside
-///   of the main nftables objects (batches, sets, rules, chains and tables), which are
-///   the outermost structures, and as such cannot be nested.
-/// - `derive_decoder` (defaults to `true`): derive a [`rustables::nlmsg::AttributeDecoder`]
-///   implementation for the structure
-/// - `derive_deserialize` (defaults to `true`): derive a [`rustables::nlmsg::NfNetlinkDeserializable`]
-///   implementation for the structure
-///
-/// # Example use
-/// ```ignore
-/// #[nfnetlink_struct(derive_deserialize = false)]
-/// #[derive(PartialEq, Eq, Default, Debug)]
-/// pub struct Chain {
-///     family: ProtocolFamily,
-///     #[field(NFTA_CHAIN_TABLE)]
-///     table: String,
-///     #[field(NFTA_CHAIN_TYPE, name_in_functions = "type")]
-///     chain_type: ChainType,
-///     #[field(optional = true, crate::sys::NFTA_CHAIN_USERDATA)]
-///     userdata: Vec<u8>,
-///     ...
-/// }
-/// ```
-///
-/// # Type of fields
-/// This contrived example show the two possible type of fields:
-/// - A field that is not converted to a netlink attribute (`family`) because it is not
-///   annotated in `#[field]` attribute.
-///   When deserialized, this field will take the value it is given in the Default implementation
-///   of the struct.
-/// - A field that is annotated with the `#[field]` attribute.
-///   That attribute takes parameters (there are none here), and the netlink attribute type.
-///   When annotated with that attribute, the macro will generate `get_<name>`, `set_<name>` and
-///   `with_<name>` methods to manipulate the attribute (e.g. `get_table`, `set_table` and
-///   `with_table`).
-///   It will also replace the field type (here `String`) with an Option (`Option<String>`)
-///   so the struct may represent objects where that attribute is not set.
-///
-/// # `#[field]` parameters
-/// The `#[field]` attribute can be parametrized through two options:
-/// - `optional` (defaults to `false`): if the netlink attribute type (here `NFTA_CHAIN_USERDATA`)
-///   does not exist, do not generate methods and ignore this attribute if encountered
-///   while deserializing a nftables object.
-///   This is useful for attributes added recently to the kernel, which may not be supported on
-///   older kernels.
-///   Support for an attribute is detected according to the existence of that attribute in the kernel
-///   headers.
-/// - `name_in_functions` (not defined by default): overwrite the `<name`> in the name of the methods
-///   `get_<name>`, `set_<name>` and `with_<name>`.
-///   Here, this means that even though the field is called `chain_type`, users can query it with
-///   the method `get_type` instead of `get_chain_type`.
-#[proc_macro_attribute]
-pub fn nfnetlink_struct(attrs: TokenStream, item: TokenStream) -> TokenStream {
-    match nfnetlink_struct_inner(attrs, item) {
-        Ok(tokens) => tokens,
-        Err(diag) => diag.emit_as_item_tokens().into(),
-    }
-}
-
 struct Variant<'a> {
     inner: &'a syn::Variant,
     name: &'a Ident,
@@ -499,21 +494,20 @@ struct EnumArgs {
     ty: Option<Path>,
 }
 
-fn parse_enum_args(input: TokenStream) -> Result<EnumArgs, Diagnostic> {
+fn parse_enum_args(input: TokenStream) -> syn::Result<EnumArgs> {
     let mut args = EnumArgs::default();
     let parser = Punctuated::<Meta, Token![,]>::parse_terminated;
-    let attribute_args = parser
-        .parse(input)
-        .map_err(|e| Diagnostic::new(Level::Error, e.to_string()))?;
+    let attribute_args = parser.parse(input)?;
     for arg in attribute_args.iter() {
         match arg {
             Meta::Path(path) => {
                 if args.ty.is_none() {
                     args.ty = Some(path.clone());
                 } else {
-                    return Err(arg
-                        .span()
-                        .error("A value can only have a single representation"));
+                    return Err(Error::new(
+                        arg.span(),
+                        "A value can only have a single representation",
+                    ));
                 }
             }
             Meta::NameValue(namevalue) => {
@@ -531,36 +525,46 @@ fn parse_enum_args(input: TokenStream) -> Result<EnumArgs, Diagnostic> {
                         {
                             args.nested = boolean.value;
                         } else {
-                            return Err(namevalue.value.span().error("Expected a boolean"));
+                            return Err(Error::new(namevalue.value.span(), "Expected a boolean"));
                         }
                     }
-                    _ => return Err(arg.span().error("Unsupported macro parameter")),
+                    _ => return Err(Error::new(arg.span(), "Unsupported macro parameter")),
                 }
             }
-            _ => return Err(arg.span().error("Unrecognized argument")),
+            _ => return Err(Error::new(arg.span(), "Unrecognized argument")),
         }
     }
     Ok(args)
 }
 
-fn nfnetlink_enum_inner(attrs: TokenStream, item: TokenStream) -> Result<TokenStream, Diagnostic> {
+#[manyhow]
+#[proc_macro_attribute]
+pub fn nfnetlink_enum(attrs: TokenStream, item: TokenStream) -> syn::Result<TokenStream> {
     let ast: ItemEnum = parse(item).unwrap();
     let name = ast.ident;
 
     let args = match parse_enum_args(attrs) {
         Ok(x) => x,
-        Err(_) => return Err(Span::call_site().error("Could not parse the macro arguments")),
+        Err(_) => {
+            return Err(Error::new(
+                Span::call_site(),
+                "Could not parse the macro arguments",
+            ));
+        }
     };
 
     if args.ty.is_none() {
-        return Err(Span::call_site().error("The target type representation is unspecified"));
+        return Err(Error::new(
+            Span::call_site(),
+            "The target type representation is unspecified",
+        ));
     }
 
     let mut variants = Vec::with_capacity(ast.variants.len());
 
     for variant in ast.variants.iter() {
         if variant.discriminant.is_none() {
-            return Err(variant.ident.span().error("Missing value"));
+            return Err(Error::new(variant.ident.span(), "Missing value"));
         }
         let discriminant = variant.discriminant.as_ref().unwrap();
         if let syn::Expr::Path(path) = &discriminant.1 {
@@ -570,7 +574,7 @@ fn nfnetlink_enum_inner(attrs: TokenStream, item: TokenStream) -> Result<TokenSt
                 value: &path.path,
             });
         } else {
-            return Err(discriminant.1.span().error("Expected a path"));
+            return Err(Error::new(discriminant.1.span(), "Expected a path"));
         }
     }
 
@@ -614,6 +618,7 @@ fn nfnetlink_enum_inner(attrs: TokenStream, item: TokenStream) -> Result<TokenSt
             expr: Box::new(cur_value),
             as_token: Token![as](name.span()),
             ty: Box::new(Type::Path(TypePath {
+                attrs: Vec::new(),
                 qself: None,
                 path: repr_type.clone(),
             })),
@@ -644,12 +649,4 @@ fn nfnetlink_enum_inner(attrs: TokenStream, item: TokenStream) -> Result<TokenSt
     };
 
     Ok(res.into())
-}
-
-#[proc_macro_attribute]
-pub fn nfnetlink_enum(attrs: TokenStream, item: TokenStream) -> TokenStream {
-    match nfnetlink_enum_inner(attrs, item) {
-        Ok(tokens) => tokens,
-        Err(diag) => diag.emit_as_item_tokens().into(),
-    }
 }

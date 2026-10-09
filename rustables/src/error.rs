@@ -151,7 +151,11 @@ pub enum QueryError {
     #[error("Error while building netlink objects in Rust")]
     BuilderError(#[from] BuilderError),
 
-    #[error("Error received from the kernel")]
+    #[error(
+        "Error received from the kernel: errno={0}, nlmsgerr={1:?}",
+        .0.error.abs(),
+        .0
+    )]
     NetlinkError(nlmsgerr),
 
     #[error("Couldn't allocate a netlink object, out of memory ?")]

@@ -5,7 +5,7 @@ use super::Expression;
 /// Sets the source IP to that of the output interface.
 #[derive(Default, Debug, PartialEq, Eq)]
 #[nfnetlink_struct(nested = true)]
-pub struct Masquerade;
+pub struct Masquerade {}
 
 impl Clone for Masquerade {
     fn clone(&self) -> Self {

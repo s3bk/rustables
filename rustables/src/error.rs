@@ -152,9 +152,9 @@ pub enum QueryError {
     BuilderError(#[from] BuilderError),
 
     #[error(
-        "Error received from the kernel: errno={0}, nlmsgerr={1:?}",
-        .0.error.abs(),
-        .0
+        "Error received from the kernel: errno={errno}, nlmsgerr={nlmsgerr:?}",
+        errno=.0.error,
+        nlmsgerr=.0
     )]
     NetlinkError(nlmsgerr),
 
